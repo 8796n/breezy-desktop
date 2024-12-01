@@ -3,6 +3,7 @@ import Gio from 'gi://Gio';
 import GLib from 'gi://GLib';
 import Meta from 'gi://Meta';
 import Shell from 'gi://Shell';
+import GObject from 'gi://GObject'
 
 import { CursorManager } from './cursormanager.js';
 import Globals from './globals.js';
@@ -14,6 +15,10 @@ import { IPC_FILE_PATH, XREffect } from './xrEffect.js';
 
 import {Extension} from 'resource:///org/gnome/shell/extensions/extension.js';
 import * as Main from 'resource:///org/gnome/shell/ui/main.js';
+
+import * as PanelMenu from 'resource:///org/gnome/shell/ui/panelMenu.js';
+import * as PopupMenu from 'resource:///org/gnome/shell/ui/popupMenu.js';
+import * as QuickSettings from 'resource:///org/gnome/shell/ui/quickSettings.js';
 
 const NESTED_MONITOR_PRODUCT = 'MetaMonitor';
 const SUPPORTED_MONITOR_PRODUCTS = [
@@ -101,7 +106,6 @@ export default class BreezyDesktopExtension extends Extension {
                     Globals.logger.log('ERROR: BreezyDesktopExtension enable - xr_driver_cli not found');
                 }
             }
-
             this._setup();
         } catch (e) {
             Globals.logger.log(`ERROR: BreezyDesktopExtension enable ${e.message}\n${e.stack}`);
@@ -314,6 +318,13 @@ export default class BreezyDesktopExtension extends Extension {
                 this._add_settings_keybinding('recenter-display-shortcut', this._recenter_display.bind(this));
                 this._add_settings_keybinding('toggle-display-distance-shortcut', this._xr_effect._change_distance.bind(this._xr_effect));
                 this._add_settings_keybinding('toggle-follow-shortcut', this._toggle_follow_mode.bind(this));
+
+                // Add QuickSetting Indicator.
+                if (!this._indicator){
+                    Globals.logger.log_debug('BreezyDesktopExtension _effect_enable _indicator');
+                    this._indicator = new XREffectIndicator(this);
+                    Main.panel.statusArea.quickSettings.addExternalIndicator(this._indicator);
+                }
             } catch (e) {
                 Globals.logger.log(`ERROR: BreezyDesktopExtension _effect_enable ${e.message}\n${e.stack}`);
                 this._effect_disable();
@@ -609,6 +620,12 @@ export default class BreezyDesktopExtension extends Extension {
                 this._overlay.mainActor().remove_effect_by_name('xr-desktop');
                 this._overlay.destroy();
             }
+            if (this._indicator){
+                Globals.logger.log_debug('BreezyDesktopExtension _effect_disable _indicator');
+                this._indicator.quickSettingsItems.forEach(item => item.destroy());
+                this._indicator.destroy();
+                this._indicator = null;
+            }
 
             // this should always be done at the end of this function after the widescreen settings binding is removed,
             // so it doesn't reset the setting to false
@@ -645,6 +662,69 @@ export default class BreezyDesktopExtension extends Extension {
     }
 }
 
+const XREffectToggle = GObject.registerClass(
+    class XREffectToggle extends QuickSettings.QuickMenuToggle {
+        _init(params) {
+            const giconFile = new Gio.FileIcon({file: Gio.File.new_for_path(`${params.path}/icons/glass.svg`)});
+            super._init({
+                title: _('XR Effect'),
+                gicon: giconFile,
+            });
+
+
+            this.connect('clicked', () => {
+                params._toggle_xr_effect();
+                this._sync(params._is_effect_running);
+            })
+            this.menu.setHeader(giconFile, _('XR Effect'));
+
+            const menuFolowSwitch = new PopupMenu.PopupSwitchMenuItem(_('Follow mode'), false, {});
+            menuFolowSwitch.connect('toggled', () => {params._toggle_follow_mode();})
+            this.menu.addMenuItem(menuFolowSwitch);
+            const menuWideSwitch = new PopupMenu.PopupSwitchMenuItem(_('Widescreen mode'), false, {});
+            menuWideSwitch.connect('toggled', () =>  {params._request_sbs_mode_change();})
+            this.menu.addMenuItem(menuWideSwitch);
+            
+            this._itemsSection = new PopupMenu.PopupMenuSection();
+            this._itemsSection.addAction(_('Re-center'), () => {params._recenter_display()});
+            this._itemsSection.addAction(_('Change distance'), () => {params._xr_effect._change_distance()});
+
+            this.menu.addMenuItem(this._itemsSection);
+
+            // this.menu.addMenuItem(new PopupMenu.PopupSeparatorMenuItem());
+            // const settingsItem = this.menu.addAction('More Settings', {});
+
+            // settingsItem.visible = Main.sessionMode.allowSettings;
+            // this.menu._settingsActions[params.uuid] = settingsItem;
+
+            this._sync(params._is_effect_running);
+        }
+        _sync(is_effect_running){
+            if (this.checked !== is_effect_running)
+                this.set({is_effect_running});
+        }
+
+    });
+
+const XREffectIndicator = GObject.registerClass(
+    class XREffectIndicator extends QuickSettings.SystemIndicator {
+        _init(params){
+            super._init();
+            const giconFile = new Gio.FileIcon({file: Gio.File.new_for_path(`${params.path}/icons/glass_white.svg`)});
+            this._indicator = this._addIndicator();
+            this._indicator.gicon = giconFile;
+
+            // params._xr_effect.connect('notify::supported-device-detected', this._updateIcon.bind(this));
+            this.quickSettingsItems.push(new XREffectToggle(params));
+        }
+        
+        _updateIcon(effect, _pspec){
+            const device_connected = effect.supported_device_detected;
+
+            this._indicator.visible = device_connected;
+        }
+    }
+)
 function init() {
     return new Extension();
 }
